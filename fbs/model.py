@@ -433,12 +433,20 @@ class FBSBlock(nn.Module):
         """
         # Layer normalisation on the input
         x = self.norm1(h)
+        # Compute PAW preview and loss from current state
+        z, paw_loss = self.paw(x, embedding_weight, targets)
+        # Skip‑gate decisions from current state + preview
+        g, _ = self.sg(x, z, threshold=threshold)  # (batch, seq, 1)
+
+        # Inference short-circuit: if every token is gated to skip,
+        # bypass attention/CH/FFN and forward the previous hidden state.
+        if targets is None and torch.all(g > 0.5):
+            return h, paw_loss
+
         # Standard self‑attention
         sa_out = self.attn(x)
         # Add residual
         h_sa = h + sa_out
-        # Compute PAW preview and loss
-        z, paw_loss = self.paw(h_sa, embedding_weight, targets)
         # Compute CH contribution and loss
         ch_out, ch_loss = self.ch(h_sa, pseudo_labels)
         # Fuse: h + SA + PAW + CH
@@ -446,10 +454,8 @@ class FBSBlock(nn.Module):
         fused_norm = self.norm2(fused)
         # Compute FFN
         ffn_out = self.ffn(fused_norm)
-        # Skip‑gate decisions
-        g, _ = self.sg(h_sa, z, threshold=threshold)  # (batch, seq, 1)
         # Apply gating: g=1 skip (copy input), g=0 compute (fused + ffn)
-        h_out = g * h_sa + (1 - g) * (fused + ffn_out)
+        h_out = g * h + (1 - g) * (fused + ffn_out)
         # Auxiliary losses
         aux_loss = paw_loss + ch_loss
         return h_out, aux_loss

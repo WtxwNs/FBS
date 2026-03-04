@@ -87,15 +87,18 @@ def batchify(
 
 
 def generate_pseudo_labels(batch_seq: torch.Tensor) -> torch.Tensor:
-    """Generate dummy BIOS labels for a batch of sequences.
+    """Generate simple BIOS pseudo labels from token boundaries.
 
-    In the absence of a supervised chunking dataset, this function
-    produces pseudo‑labels that mark every token as outside (`O`).
+    For this toy word-level tokenizer, each non-padding token is treated
+    as a standalone chunk (`S`) because word boundaries are explicit in
+    the whitespace tokenisation. Padding tokens remain `O`.
+
     The label mapping is: 0=B, 1=I, 2=O, 3=S.
 
     Returns a tensor of shape `(batch, seq)`.
     """
-    batch, seq = batch_seq.size()
-    # All tokens are labelled as 'O' (index 2)
-    labels = torch.full((batch, seq), 2, dtype=torch.long, device=batch_seq.device)
+    # Start with all tokens as outside (`O`).
+    labels = torch.full_like(batch_seq, 2, dtype=torch.long)
+    # Mark non-padding tokens (id != 0) as singleton chunks (`S`).
+    labels[batch_seq != 0] = 3
     return labels

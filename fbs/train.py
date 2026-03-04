@@ -26,7 +26,7 @@ python -m fbs.train \
 ```
 
 The trained model will be saved as `fbs_model.pt` in the current
-working directory.
+working directory (with optional per-epoch checkpoints).
 """
 
 from __future__ import annotations
@@ -101,7 +101,7 @@ def main() -> None:
             for inp, tgt in pbar:
                 inp = inp.to(device)
                 tgt = tgt.to(device)
-                # Generate dummy BIOS labels (all O)
+                # Generate BIOS pseudo labels from token boundaries
                 pseudo = generate_pseudo_labels(inp).to(device)
                 optimizer.zero_grad()
                 logits, loss = model(inp, targets=tgt, pseudo_labels=pseudo)
@@ -122,6 +122,15 @@ def main() -> None:
             "itos": itos,
         }, ckpt_path)
         print(f"Saved checkpoint to {ckpt_path}")
+
+    # Save final model path expected by README
+    final_path = "fbs_model.pt"
+    torch.save({
+        "model_state": model.state_dict(),
+        "stoi": stoi,
+        "itos": itos,
+    }, final_path)
+    print(f"Saved final model to {final_path}")
 
 
 if __name__ == "__main__":
