@@ -1,0 +1,5 @@
+Human reading is not strictly serial.  我们提出了一种新的模型结构以模拟人类的并行阅读机制。
+Parallel reading relies on parafoveal preview, chunk‑level processing and adaptive skimming.
+这种方法在中英文混合语料上表现出色。  The FBS Transformer incorporates PAW, CH and SG modules.
+It enables the model to look ahead, summarise upcoming tokens, and skip computation when confident.
+通过引入可训练的 preview→chunk→skim 循环，FBS achieves better quality–efficiency trade‑offs.
