@@ -1,4 +1,4 @@
-# Fovea-Block‑Skip (FBS) Transformer
+# FBS: Modeling Native Parallel Reading inside a Transformer
 
 <p align="center">
   <a href="https://arxiv.org/abs/2601.21708">
