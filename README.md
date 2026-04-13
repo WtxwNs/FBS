@@ -11,7 +11,7 @@
   <img src="https://img.shields.io/github/stars/WtxwNs/FBS?style=social" alt="Stars"/>
 </p>
 
-This repository contains a minimal yet complete implementation of the **Fovea‑Block‑Skip (FBS) Transformer** as described in the paper *“FBS: Modeling Native Parallel Reading inside a Transformer”*.  The goal of this package is to faithfully reproduce the novel architectural components—Parafovea‑Attention Window (PAW), Chunk‑Head (CH) and Skip‑Gate (SG)—within a conventional causal Transformer and provide a runnable training script on a toy corpus.
+This repository contains a minimal yet complete implementation of the **Fovea‑Block‑Skip (FBS) Transformer** as described in the paper *“FBS: Modeling Native Parallel Reading inside a Transformer”*, which has been accepted as findings to ACL 2026.  The goal of this package is to faithfully reproduce the novel architectural components—Parafovea‑Attention Window (PAW), Chunk‑Head (CH) and Skip‑Gate (SG)—within a conventional causal Transformer and provide a runnable training script on a toy corpus.
 
 The implementation focuses on clarity and modularity rather than chasing state‑of‑the‑art performance.  It is intended to serve as a reference implementation for researchers and engineers wishing to experiment with FBS‑style models.  All code is fully contained in this package and does not require any external proprietary dependencies.
 
