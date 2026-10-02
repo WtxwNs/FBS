@@ -156,8 +156,9 @@ class PAW(nn.Module):
             embedding_weight: Embedding matrix `(vocab_size, d_model)` used
                 to map token distributions into embeddings.  This should be
                 tied to the model's input embedding.
-            targets: Optional tensor of token indices `(batch, seq)`
-                representing the ground truth.  When provided, a
+            targets: Optional next-token indices `(batch, seq)`, already
+                shifted one position relative to h, with -100 for padding.
+                When provided, a
                 multi‑horizon cross‑entropy loss is returned.
 
         Returns:
@@ -194,11 +195,13 @@ class PAW(nn.Module):
             preview_embeds[:, :, r, :] = u
             # If targets provided, compute cross‑entropy loss at i against target i+r
             if targets is not None:
-                # Compute the ground truth at horizon r: shift targets left by r+1
-                # For positions where i+r >= seq, we ignore the loss
+                # targets already contains the next token: horizon r+1
+                # therefore needs an additional shift of r, not r+1.
                 target_shifted = torch.full_like(targets, fill_value=-100)  # ignore index
-                if r + 1 < seq:
-                    target_shifted[:, :- (r + 1)] = targets[:, (r + 1) :]
+                if r == 0:
+                    target_shifted = targets
+                elif r < seq:
+                    target_shifted[:, :-r] = targets[:, r:]
                 # Cross‑entropy loss ignoring positions with ignore_index
                 ce = F.cross_entropy(
                     logits.view(-1, logits.size(-1)),
@@ -211,7 +214,9 @@ class PAW(nn.Module):
                 # Note: r is zero‑indexed here so horizon = r+1
                 horizon = (r + 1)
                 w = torch.sigmoid(self.gamma * (k_tilde - (horizon) + 0.5))  # (batch, seq)
-                # Weight the loss and normalise
+                # Exclude unavailable horizons and padding from both the
+                # numerator and denominator.
+                w = w * (target_shifted != -100)
                 total_loss = total_loss + (w * ce).sum() / (w.sum() + 1e-6)
         # Compress preview embeddings along the horizon dimension using weighted mean
         z_list = []
@@ -333,10 +338,21 @@ class ChunkHead(nn.Module):
             q = self.q_proj(h[b])  # (seq, d_chunk)
             # Compute attention scores (single head) -> (seq, num_chunks)
             scores = torch.matmul(q, k.transpose(0, 1)) / (self.d_chunk ** 0.5)
+            # A chunk is available only after its end. Including a chunk
+            # that contains the current token could expose future states
+            # through mean pooling (or reveal a future chunk boundary).
+            chunk_ends = torch.tensor([chunk[-1] for chunk in chunks], device=device)
+            available = chunk_ends.unsqueeze(0) < torch.arange(seq, device=device).unsqueeze(1)
+            has_context = available.any(dim=-1, keepdim=True)
+            scores = scores.masked_fill(~available, float('-inf'))
+            # The first token has no completed chunks. Avoid softmax of
+            # an all-masked row and give it a zero CH contribution.
+            scores = torch.where(has_context, scores, torch.zeros_like(scores))
             attn = F.softmax(scores, dim=-1)  # (seq, num_chunks)
+            attn = attn * available
             # Weighted sum of v
             attended = torch.matmul(attn, v)  # (seq, d_model)
-            ch_out[b] = self.out_proj(attended)
+            ch_out[b] = self.out_proj(attended) * has_context
         return ch_out, loss
 
 

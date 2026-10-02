@@ -57,13 +57,24 @@ python -m fbs.train \
 
 During training the script reports the cross‑entropy loss and perplexity.  Upon completion the model checkpoint is saved to disk (`./fbs_model.pt`).  Feel free to adjust hyper‑parameters, increase the model size, or swap in your own dataset to explore the effects of PAW/CH/SG.
 
+Short corpora and final partial batches are padded: input padding is `0`
+and ignored target positions are `-100`. At least two tokens are required.
+The reported `loss` includes the PAW/CH auxiliary objectives; `ppl` uses
+only next-token cross-entropy on valid targets.
+
+Run the small CPU regression suite after installing the dependencies:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
 ## Notes on the implementation
 
 This codebase follows the algorithmic description in the paper as closely as possible while keeping the implementation concise and understandable:
 
 1. **Parafovea‑Attention Window (PAW)** – Given the hidden state at each position, PAW predicts a variable lookahead window length `k(i)` (bounded by `k_max`) using a small linear head.  For each horizon `r∈{1,…,k_max}` the module produces a distribution over the `r`‑th next token, maps the distribution into a preview embedding by taking its expectation under the embedding matrix, and then compresses these embeddings into a single preview vector `z(i)` via weighted mean pooling.  The window weights follow the soft assignment in Appendix C.2 of the paper.  The preview vector is added to the token state before the feed‑forward network.
 
-2. **Chunk‑Head (CH)** – A lightweight classifier predicts BIOS‑style chunk labels (`B`, `I`, `O`, `S`) for each token.  Based on the predicted labels, the tokens in the current chunk are pooled to produce a chunk representation.  Each token attends over the cached chunk representations via a single‑head attention to incorporate phrase‑level semantics.  The weak‑supervision pipeline described in Appendix D is beyond the scope of this toy implementation; instead we train the chunk classifier jointly with the language model using pseudo‑labels inferred from token boundaries.
+2. **Chunk‑Head (CH)** – A lightweight classifier predicts BIOS‑style chunk labels (`B`, `I`, `O`, `S`) for each token.  Based on the predicted labels, tokens are pooled into chunk representations. Each token attends only to chunks that ended strictly before its position, so future states and boundaries cannot leak into causal predictions. Positions with no completed chunks receive a zero CH contribution. The weak‑supervision pipeline described in Appendix D is beyond the scope of this toy implementation; instead we train the chunk classifier jointly with the language model using pseudo‑labels inferred from token boundaries.
 
 3. **Skip‑Gate (SG)** – A small multi‑layer perceptron computes a skip probability from the current hidden state and PAW preview.  At inference time the gate can short‑circuit the expensive attention and feed‑forward computations, forwarding the previous hidden state instead.  In this demonstration the gate is trained using a straight‑through estimator, as described in Appendix E.2.
 
