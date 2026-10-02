@@ -62,26 +62,27 @@ def batchify(
     """Group sequences into batches of fixed length.
 
     Each batch contains `batch_size` sub‑sequences of length `seq_len`.
-    Sequences shorter than the desired length are padded with `<pad>` (id=0).
-    The function also returns a shifted copy of the input for next‑token
-    prediction.
+    Input padding uses `<pad>` (id=0); target padding uses -100 so that
+    cross-entropy ignores it. Every adjacent token pair in the flattened
+    corpus is retained, including a final partial batch.
 
     Returns a list of `(input_ids, targets)` pairs, both of shape
     `(batch_size, seq_len)`.
     """
+    if batch_size <= 0 or seq_len <= 0:
+        raise ValueError("batch_size and seq_len must be positive")
     # Flatten the list of sequences into a single long sequence
     flat = [tok for seq in sequences for tok in seq]
-    num_tokens = len(flat)
-    # Truncate so that it divides evenly into batch_size * seq_len
-    total = (num_tokens // (batch_size * seq_len)) * (batch_size * seq_len)
-    flat = flat[:total]
-    # Reshape into (batch_size, -1)
-    data = torch.tensor(flat, dtype=torch.long).view(batch_size, -1)
     batches: List[Tuple[torch.Tensor, torch.Tensor]] = []
-    # Generate sub‑sequences
-    for i in range(0, data.size(1) - seq_len, seq_len):
-        inp = data[:, i : i + seq_len].clone()
-        tgt = data[:, i + 1 : i + seq_len + 1].clone()
+    starts = range(0, len(flat) - 1, seq_len)
+    for offset in range(0, len(starts), batch_size):
+        inp = torch.zeros((batch_size, seq_len), dtype=torch.long)
+        tgt = torch.full((batch_size, seq_len), -100, dtype=torch.long)
+        for row, start in enumerate(starts[offset : offset + batch_size]):
+            window = flat[start : start + seq_len + 1]
+            length = len(window) - 1
+            inp[row, :length] = torch.tensor(window[:-1], dtype=torch.long)
+            tgt[row, :length] = torch.tensor(window[1:], dtype=torch.long)
         batches.append((inp, tgt))
     return batches
 

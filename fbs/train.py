@@ -74,13 +74,14 @@ def main() -> None:
     print(f"Vocabulary size: {len(stoi)}")
     # Encode corpus
     encoded = encode_text(tokens, stoi)
-    # Group into sequences equal to seq_len * batch_size
-    # For simplicity, create individual sequences of length args.seq_len + 1
-    sequences: List[List[int]] = []
-    for i in range(0, len(encoded) - args.seq_len - 1, args.seq_len + 1):
-        sequences.append(encoded[i : i + args.seq_len + 1])
-    # Batchify sequences
-    batches = batchify(sequences, args.batch_size, args.seq_len)
+    if args.epochs <= 0:
+        raise ValueError("epochs must be positive")
+    if not 1 <= args.seq_len <= 1024:
+        raise ValueError("seq_len must be between 1 and 1024")
+    # Batch the complete corpus once, retaining the final partial window.
+    batches = batchify([encoded], args.batch_size, args.seq_len)
+    if not batches:
+        raise ValueError("The corpus must contain at least two tokens")
     print(f"Number of batches: {len(batches)}")
     # Instantiate model
     model = FBSModel(
@@ -96,6 +97,7 @@ def main() -> None:
     for epoch in range(1, args.epochs + 1):
         model.train()
         total_loss = 0.0
+        total_lm_loss = 0.0
         total_tokens = 0
         with tqdm(batches, desc=f"Epoch {epoch}/{args.epochs}") as pbar:
             for inp, tgt in pbar:
@@ -103,16 +105,24 @@ def main() -> None:
                 tgt = tgt.to(device)
                 # Generate BIOS pseudo labels from token boundaries
                 pseudo = generate_pseudo_labels(inp).to(device)
+                pseudo = pseudo.masked_fill(tgt == -100, -100)
                 optimizer.zero_grad()
                 logits, loss = model(inp, targets=tgt, pseudo_labels=pseudo)
                 loss.backward()
                 optimizer.step()
                 # Accumulate loss per token for reporting
-                batch_tokens = inp.numel()
+                batch_tokens = (tgt != -100).sum().item()
                 total_loss += loss.item() * batch_tokens
+                # Perplexity is based on next-token cross-entropy only,
+                # not the additional PAW/CH training objectives.
+                lm_loss = nn.functional.cross_entropy(
+                    logits.detach().reshape(-1, len(stoi)), tgt.reshape(-1)
+                )
+                total_lm_loss += lm_loss.item() * batch_tokens
                 total_tokens += batch_tokens
                 avg_loss = total_loss / total_tokens
-                perplexity = math.exp(avg_loss) if avg_loss < 20 else float('inf')
+                avg_lm_loss = total_lm_loss / total_tokens
+                perplexity = math.exp(avg_lm_loss) if avg_lm_loss < 20 else float('inf')
                 pbar.set_postfix({"loss": f"{avg_loss:.4f}", "ppl": f"{perplexity:.2f}"})
         # Save checkpoint after each epoch
         ckpt_path = f"fbs_model_epoch{epoch}.pt"
