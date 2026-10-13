@@ -1,0 +1,14 @@
+{
+  "seed": 42,
+  "pretrained": {"model_id": "SET_EXACT_ORIGINAL_QWEN3_CHECKPOINT", "revision": "SET_IMMUTABLE_CHECKPOINT_REVISION"},
+  "fbs": {"k_max": 8, "preview_rank": 32, "chunk_rank": 32, "gate_hidden": 32},
+  "data": "../data/prepared_corpus.jsonl",
+  "output": "../runs/qwen3_reconstruction",
+  "seq_len": 2048,
+  "token_budget": 12000000000,
+  "batch_tokens": 2000000,
+  "learning_rate": 0.00002,
+  "warmup_fraction": 0.04,
+  "loss_weights": {"preview": 0.1, "bios": 0.1, "align": 0.01, "gate": 0.01},
+  "save_every": 100
+}

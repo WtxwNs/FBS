@@ -33,6 +33,9 @@ from __future__ import annotations
 
 import argparse
 import math
+import random
+from pathlib import Path
+from .checkpoint import save_checkpoint
 import os
 from typing import List
 
@@ -59,11 +62,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--learning_rate", type=float, default=1e-3, help="Learning rate")
     parser.add_argument("--min_freq", type=int, default=1, help="Minimum frequency for vocabulary inclusion")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Device to train on")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--output_dir", default="runs/toy")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     device = torch.device(args.device)
     print(f"Using device: {device}")
     # Load and tokenise corpus
@@ -125,22 +133,13 @@ def main() -> None:
                 perplexity = math.exp(avg_lm_loss) if avg_lm_loss < 20 else float('inf')
                 pbar.set_postfix({"loss": f"{avg_loss:.4f}", "ppl": f"{perplexity:.2f}"})
         # Save checkpoint after each epoch
-        ckpt_path = f"fbs_model_epoch{epoch}.pt"
-        torch.save({
-            "model_state": model.state_dict(),
-            "stoi": stoi,
-            "itos": itos,
-        }, ckpt_path)
+        ckpt_path = Path(args.output_dir) / f"epoch_{epoch}.pt"
+        save_checkpoint(ckpt_path, model, stoi=stoi, itos=itos, epoch=epoch, seed=args.seed,
+                        optimizer=optimizer.state_dict(), args=vars(args))
         print(f"Saved checkpoint to {ckpt_path}")
+    save_checkpoint(Path(args.output_dir) / "final.pt", model, stoi=stoi, itos=itos,
+                    epoch=args.epochs, seed=args.seed, optimizer=optimizer.state_dict(), args=vars(args))
 
-    # Save final model path expected by README
-    final_path = "fbs_model.pt"
-    torch.save({
-        "model_state": model.state_dict(),
-        "stoi": stoi,
-        "itos": itos,
-    }, final_path)
-    print(f"Saved final model to {final_path}")
 
 
 if __name__ == "__main__":

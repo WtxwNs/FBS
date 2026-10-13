@@ -64,7 +64,7 @@ class MultiHeadCausalSelfAttention(nn.Module):
         self.v_proj = nn.Linear(d_model, d_model)
         self.o_proj = nn.Linear(d_model, d_model)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, active_mask=None) -> torch.Tensor:
         batch, seq, dim = x.size()
         # Compute Q,K,V
         q = self.q_proj(x)  # (batch, seq, dim)
@@ -79,8 +79,13 @@ class MultiHeadCausalSelfAttention(nn.Module):
         # Causal mask: positions cannot attend to future tokens
         # Use an additive mask with -inf for invalid positions
         mask = torch.triu(torch.ones(seq, seq, device=x.device), diagonal=1).bool()
+        mask = mask[None, None].expand(batch, self.n_heads, -1, -1)
+        if active_mask is not None:
+            mask = mask | ~active_mask[:, None, None, :]
+        visible = (~mask).any(dim=-1, keepdim=True)
         scores = scores.masked_fill(mask, float('-inf'))
-        attn = F.softmax(scores, dim=-1)
+        scores = torch.where(visible, scores, torch.zeros_like(scores))
+        attn = F.softmax(scores, dim=-1) * ~mask
         # Weighted sum of values
         context = torch.matmul(attn, v)  # (batch, heads, seq, d_head)
         # Concatenate heads
@@ -123,11 +128,15 @@ class PAW(nn.Module):
         k_max: int = 15,
         top_k: int = 5,
         gamma: float = 4.0,
+        rank: Optional[int] = None,
     ) -> None:
         super().__init__()
         self.d_model = d_model
         self.vocab_size = vocab_size
+        if k_max < 0:
+            raise ValueError("k_max must be nonnegative")
         self.k_max = k_max
+        self.rank = rank
         self.top_k = top_k
         self.gamma = gamma
         # Window predictor s_i -> in (−∞,+∞)
@@ -135,13 +144,17 @@ class PAW(nn.Module):
         # Multi‑horizon predictive heads: one linear per horizon
         self.preview_heads = nn.ModuleList([
             nn.Linear(d_model, vocab_size) for _ in range(k_max)
-        ])
+        ]) if rank is None else nn.ModuleList()
+        if rank is not None:
+            self.down = nn.Linear(d_model, rank, bias=False)
+            self.up = nn.Linear(rank, d_model, bias=False)
+            self.horizon = nn.Parameter(torch.zeros(k_max, rank))
         # A small layer to compress the concatenated preview embeddings
         # into a single vector (optional).  Here we use a simple MLP.
         self.compress = nn.Sequential(
-            nn.Linear(d_model, d_model),
+            nn.Linear(d_model, d_model if rank is None else rank),
             nn.Tanh(),
-            nn.Linear(d_model, d_model),
+            nn.Linear(d_model if rank is None else rank, d_model),
         )
 
     def forward(
@@ -168,6 +181,8 @@ class PAW(nn.Module):
         """
         batch, seq, dim = h.size()
         device = h.device
+        if self.k_max == 0:
+            return torch.zeros_like(h), h.new_zeros(())
         # Predict continuous window length k_tilde in [0, k_max]
         s = self.window_pred(h).squeeze(-1)  # (batch, seq)
         k_tilde = self.k_max * torch.sigmoid(s)  # (batch, seq)
@@ -176,22 +191,23 @@ class PAW(nn.Module):
         total_loss = h.new_zeros(1)
         # For each horizon r compute token distribution and preview embedding
         # We'll vectorise across batch and sequence for efficiency
-        for r in range(self.k_max):
+        hard_k = torch.floor(k_tilde).long()
+        # In eval, do not evaluate horizons outside every selected window.
+        horizons = self.k_max if self.training else int(hard_k.max().item())
+        for r in range(horizons):
             # Compute logits for r‑th next token; shape (batch, seq, vocab)
-            logits = self.preview_heads[r](h)
+            logits = self.preview_heads[r](h) if self.rank is None else F.linear(
+                self.up(self.down(h) + self.horizon[r]), embedding_weight)
             # Compute predictive probabilities
             probs = F.softmax(logits, dim=-1)
             # Optionally restrict to top‑k support to reduce overhead
             if self.top_k is not None and self.top_k < self.vocab_size:
                 # Zero out probabilities except for the top‑k tokens
                 topk_vals, topk_idx = torch.topk(probs, self.top_k, dim=-1)
-                mask = torch.zeros_like(probs).scatter_(-1, topk_idx, 1.0)
-                probs = probs * mask
-                probs = probs / (probs.sum(dim=-1, keepdim=True) + 1e-8)
-            # Compute expectation under the embedding matrix
-            # ˆu_{i,r} = E^T p_{i,r}
-            # Here embedding_weight has shape (vocab_size, d_model)
-            u = torch.matmul(probs, embedding_weight)  # (batch, seq, d_model)
+                topk_vals = topk_vals / topk_vals.sum(dim=-1, keepdim=True).clamp_min(1e-8)
+                u = (F.embedding(topk_idx, embedding_weight) * topk_vals.unsqueeze(-1)).sum(-2)
+            else:
+                u = torch.matmul(probs, embedding_weight)
             preview_embeds[:, :, r, :] = u
             # If targets provided, compute cross‑entropy loss at i against target i+r
             if targets is not None:
@@ -214,24 +230,27 @@ class PAW(nn.Module):
                 # Note: r is zero‑indexed here so horizon = r+1
                 horizon = (r + 1)
                 w = torch.sigmoid(self.gamma * (k_tilde - (horizon) + 0.5))  # (batch, seq)
-                # Exclude unavailable horizons and padding from both the
-                # numerator and denominator.
+                # C.1 weighted sum over horizons, averaged over valid input
+                # positions. Do not divide by window weights: that cancels
+                # the intended window-dependent objective.
                 w = w * (target_shifted != -100)
-                total_loss = total_loss + (w * ce).sum() / (w.sum() + 1e-6)
+                total_loss = total_loss + (w * ce).sum() / (targets != -100).sum().clamp_min(1)
         # Compress preview embeddings along the horizon dimension using weighted mean
         z_list = []
         for r in range(self.k_max):
             horizon = r + 1
-            w = torch.sigmoid(self.gamma * (k_tilde - horizon + 0.5)).unsqueeze(-1)  # (batch, seq, 1)
+            w = (torch.sigmoid(self.gamma * (k_tilde - horizon + 0.5)) if self.training
+                 else (hard_k >= horizon).to(h.dtype)).unsqueeze(-1)  # (batch, seq, 1)
             z_list.append(preview_embeds[:, :, r, :] * w)
         z_sum = torch.stack(z_list, dim=2).sum(dim=2)  # (batch, seq, d_model)
         w_sum = torch.stack([
-            torch.sigmoid(self.gamma * (k_tilde - (r + 1) + 0.5))
+            (torch.sigmoid(self.gamma * (k_tilde - (r + 1) + 0.5)) if self.training
+             else (hard_k >= r + 1).to(h.dtype))
             for r in range(self.k_max)
         ], dim=2).sum(dim=2).unsqueeze(-1)  # (batch, seq, 1)
         z = z_sum / (w_sum + 1e-6)
         # Optional compression via MLP to reduce overhead and introduce non‑linearity
-        z = self.compress(z)
+        z = self.compress(z) * (w_sum > 0)
         return z, total_loss
 
 
@@ -256,8 +275,8 @@ class ChunkHead(nn.Module):
         # Projections for cross‑attention to chunk cache
         self.q_proj = nn.Linear(d_model, self.d_chunk)
         self.k_proj = nn.Linear(d_model, self.d_chunk)
-        self.v_proj = nn.Linear(d_model, self.d_model)
-        self.out_proj = nn.Linear(self.d_model, d_model)
+        self.v_proj = nn.Linear(d_model, self.d_chunk)
+        self.out_proj = nn.Linear(self.d_chunk, d_model)
 
     def forward(
         self,
@@ -279,81 +298,45 @@ class ChunkHead(nn.Module):
                 pseudo_labels are provided).
         """
         batch, seq, dim = h.size()
-        device = h.device
-        # Predict label logits
-        logits = self.label_head(h)  # (batch, seq, num_classes)
-        # Compute label loss if pseudo labels provided
-        loss = h.new_zeros(1)
-        if pseudo_labels is not None:
-            loss = F.cross_entropy(
-                logits.view(-1, self.num_classes),
-                pseudo_labels.view(-1),
-                reduction='mean',
-            )
-        # Greedy inference of labels for building chunk cache
-        pred_labels = logits.argmax(dim=-1)  # (batch, seq)
-        # Build chunk cache and compute cross‑attention for each sequence
-        ch_out = torch.zeros_like(h)
+        logits = self.label_head(h)
+        loss = h.new_zeros(())
+        if pseudo_labels is not None and (pseudo_labels != -100).any():
+            loss = F.cross_entropy(logits.reshape(-1, 4), pseudo_labels.reshape(-1), ignore_index=-100)
+        labels = logits.argmax(dim=-1)
+        rows = []
         for b in range(batch):
-            # Determine chunks according to predicted labels
-            labels = pred_labels[b].tolist()
-            chunks: List[List[int]] = []
-            i = 0
-            while i < seq:
-                label = labels[i]
-                # label indices: 0=B, 1=I, 2=O, 3=S
-                if label == 3:  # S
-                    # single token chunk
-                    chunks.append([i])
-                    i += 1
-                    continue
-                elif label == 0:  # B
-                    start = i
-                    i += 1
-                    while i < seq and pred_labels[b, i] == 1:  # I
-                        i += 1
-                    end = i  # exclusive
-                    chunks.append(list(range(start, end)))
-                    continue
-                else:
-                    # O or unexpected I (treated as O)
-                    chunks.append([i])
-                    i += 1
-                    continue
-            # Compute chunk embeddings by mean pooling
-            if len(chunks) == 0:
-                # If no chunks predicted, skip
-                ch_out[b] = 0.0
-                continue
-            chunk_embeddings = []
-            for chunk in chunks:
-                # mean pool hidden states for this chunk
-                states = h[b, torch.tensor(chunk, device=device), :]  # (len, d_model)
-                chunk_embeddings.append(states.mean(dim=0))
-            chunk_embeddings = torch.stack(chunk_embeddings, dim=0)  # (num_chunks, d_model)
-            # Project chunk embeddings to keys/values
-            k = self.k_proj(chunk_embeddings)  # (num_chunks, d_chunk)
-            v = self.v_proj(chunk_embeddings)  # (num_chunks, d_model)
-            # Project queries from token representations
-            q = self.q_proj(h[b])  # (seq, d_chunk)
-            # Compute attention scores (single head) -> (seq, num_chunks)
-            scores = torch.matmul(q, k.transpose(0, 1)) / (self.d_chunk ** 0.5)
-            # A chunk is available only after its end. Including a chunk
-            # that contains the current token could expose future states
-            # through mean pooling (or reveal a future chunk boundary).
-            chunk_ends = torch.tensor([chunk[-1] for chunk in chunks], device=device)
-            available = chunk_ends.unsqueeze(0) < torch.arange(seq, device=device).unsqueeze(1)
-            has_context = available.any(dim=-1, keepdim=True)
-            scores = scores.masked_fill(~available, float('-inf'))
-            # The first token has no completed chunks. Avoid softmax of
-            # an all-masked row and give it a zero CH contribution.
-            scores = torch.where(has_context, scores, torch.zeros_like(scores))
-            attn = F.softmax(scores, dim=-1)  # (seq, num_chunks)
-            attn = attn * available
-            # Weighted sum of v
-            attended = torch.matmul(attn, v)  # (seq, d_model)
-            ch_out[b] = self.out_proj(attended) * has_context
-        return ch_out, loss
+            cache = {"pending": [], "chunks": []}
+            rows.append(torch.stack([self.step(h[b, t], cache, int(labels[b, t])) for t in range(seq)]))
+        return torch.stack(rows), loss
+
+    def step(self, h, cache, label=None):
+        """Consume one token; a B/I chunk closes when a non-I arrives.
+
+        No end-of-sequence flush: that would make prefix outputs depend on
+        whether more tokens will arrive. Only previously closed chunks are read.
+        """
+        if label is None:
+            label = int(self.label_head(h).argmax().item())
+        cache.setdefault("keys", [])
+        cache.setdefault("values", [])
+        def append_chunk(chunk):
+            cache["chunks"].append(chunk)
+            cache["keys"].append(self.k_proj(chunk))
+            cache["values"].append(self.v_proj(chunk))
+        if label != 1 and cache["pending"]:
+            append_chunk(torch.stack(cache["pending"]).mean(0))
+            cache["pending"] = []
+        if cache["chunks"]:
+            keys, values = torch.stack(cache["keys"]), torch.stack(cache["values"])
+            weights = torch.softmax(self.q_proj(h) @ keys.T / self.d_chunk ** .5, dim=-1)
+            result = self.out_proj(weights @ values)
+        else:
+            result = torch.zeros_like(h)
+        if label == 0 or (label == 1 and cache["pending"]):
+            cache["pending"].append(h)
+        else:
+            append_chunk(h)
+        return result
 
 
 class SkipGate(nn.Module):
@@ -393,8 +376,13 @@ class SkipGate(nn.Module):
         p = torch.sigmoid(self.fc2(F.relu(self.fc1(x))))  # (batch, seq, 1)
         # Straight‑through estimator: sample hard gate from Bernoulli(p)
         # but use p in backward pass
-        hard = (p > threshold).float()
-        g = hard + p - p.detach()
+        if threshold >= 1:
+            hard = torch.zeros_like(p)
+        elif self.training:
+            hard = torch.bernoulli(p)
+        else:
+            hard = (p > threshold).to(p.dtype)
+        g = hard if threshold >= 1 else hard + p - p.detach()
         return g, p
 
 
@@ -415,11 +403,16 @@ class FBSBlock(nn.Module):
         d_ff: int,
         vocab_size: int,
         k_max: int = 15,
+        preview_rank: Optional[int] = None,
+        use_paw: bool = True,
+        use_ch: bool = True,
+        use_sg: bool = True,
     ) -> None:
         super().__init__()
         self.attn = MultiHeadCausalSelfAttention(d_model, n_heads)
         self.ffn = FeedForward(d_model, d_ff)
-        self.paw = PAW(d_model, vocab_size, k_max=k_max)
+        self.use_paw, self.use_ch, self.use_sg = use_paw, use_ch, use_sg
+        self.paw = PAW(d_model, vocab_size, k_max=k_max, rank=preview_rank)
         self.ch = ChunkHead(d_model)
         self.sg = SkipGate(d_model)
         self.norm1 = nn.LayerNorm(d_model)
@@ -450,9 +443,12 @@ class FBSBlock(nn.Module):
         # Layer normalisation on the input
         x = self.norm1(h)
         # Compute PAW preview and loss from current state
-        z, paw_loss = self.paw(x, embedding_weight, targets)
+        z, paw_loss = self.paw(x, embedding_weight, targets) if self.use_paw else (torch.zeros_like(x), x.new_zeros(()))
         # Skip‑gate decisions from current state + preview
-        g, _ = self.sg(x, z, threshold=threshold)  # (batch, seq, 1)
+        if self.use_sg:
+            g, probability = self.sg(x, z, threshold=threshold)
+        else:
+            g = probability = x.new_zeros(*x.shape[:2], 1)
 
         # Inference short-circuit: if every token is gated to skip,
         # bypass attention/CH/FFN and forward the previous hidden state.
@@ -460,11 +456,24 @@ class FBSBlock(nn.Module):
             return h, paw_loss
 
         # Standard self‑attention
-        sa_out = self.attn(x)
+        sa_out = self.attn(x, active_mask=(g.detach().squeeze(-1) < .5))
         # Add residual
         h_sa = h + sa_out
         # Compute CH contribution and loss
-        ch_out, ch_loss = self.ch(h_sa, pseudo_labels)
+        if self.use_ch:
+            # Mirror deployed CH state: skipped tokens do not update its cache.
+            ch_rows = []
+            for b in range(h.shape[0]):
+                cache = {"pending": [], "chunks": []}
+                ch_rows.append(torch.stack([
+                    self.ch.step(x[b, t], cache) if g[b, t].detach().item() < .5 else torch.zeros_like(x[b, t])
+                    for t in range(h.shape[1])]))
+            ch_out = torch.stack(ch_rows)
+            ch_loss = x.new_zeros(())
+            if pseudo_labels is not None and (pseudo_labels != -100).any():
+                ch_loss = F.cross_entropy(self.ch.label_head(x).reshape(-1, 4), pseudo_labels.reshape(-1))
+        else:
+            ch_out, ch_loss = torch.zeros_like(x), x.new_zeros(())
         # Fuse: h + SA + PAW + CH
         fused = h_sa + z + ch_out
         fused_norm = self.norm2(fused)
@@ -473,6 +482,11 @@ class FBSBlock(nn.Module):
         # Apply gating: g=1 skip (copy input), g=0 compute (fused + ffn)
         h_out = g * h + (1 - g) * (fused + ffn_out)
         # Auxiliary losses
+        valid = torch.ones(h.shape[:2], dtype=torch.bool, device=h.device) if targets is None else targets != -100
+        gate_loss = probability.squeeze(-1)[valid].mean() if valid.any() and self.use_sg else h.new_zeros(())
+        alignment_mask = valid & (ch_out.detach().abs().sum(-1) > 0)
+        align_loss = (1 - F.cosine_similarity(ch_out[alignment_mask], x[alignment_mask].detach(), dim=-1)).mean() if alignment_mask.any() else h.new_zeros(())
+        self.last_losses = dict(preview=paw_loss, bios=ch_loss, align=align_loss, gate=gate_loss)
         aux_loss = paw_loss + ch_loss
         return h_out, aux_loss
 
@@ -488,14 +502,24 @@ class FBSModel(nn.Module):
         n_heads: int = 8,
         d_ff: int = 2048,
         k_max: int = 15,
+        max_seq_len: int = 2048,
+        preview_rank: Optional[int] = None,
+        use_paw: bool = True,
+        use_ch: bool = True,
+        use_sg: bool = True,
     ) -> None:
         super().__init__()
         self.vocab_size = vocab_size
         self.d_model = d_model
+        self.config = dict(vocab_size=vocab_size, d_model=d_model, n_layers=n_layers, n_heads=n_heads,
+                           d_ff=d_ff, k_max=k_max, max_seq_len=max_seq_len, preview_rank=preview_rank,
+                           use_paw=use_paw, use_ch=use_ch, use_sg=use_sg)
         self.token_emb = nn.Embedding(vocab_size, d_model)
-        self.pos_emb = nn.Embedding(1024, d_model)
+        self.max_seq_len = max_seq_len
+        self.pos_emb = nn.Embedding(max_seq_len, d_model)
         self.layers = nn.ModuleList([
-            FBSBlock(d_model, n_heads, d_ff, vocab_size, k_max=k_max)
+            FBSBlock(d_model, n_heads, d_ff, vocab_size, k_max=k_max, preview_rank=preview_rank,
+                     use_paw=use_paw, use_ch=use_ch, use_sg=use_sg)
             for _ in range(n_layers)
         ])
         self.norm = nn.LayerNorm(d_model)
@@ -527,12 +551,16 @@ class FBSModel(nn.Module):
                 loss is zero.
         """
         batch, seq = input_ids.size()
+        if seq == 0 or seq > self.max_seq_len:
+            raise ValueError("Sequence must be nonempty and fit max_seq_len")
+        if not self.training and targets is None:
+            from .inference import prefill
+            outputs = [prefill(self, row.unsqueeze(0), threshold=threshold)[0] for row in input_ids]
+            return torch.cat(outputs, dim=0), self.token_emb.weight.new_zeros(())
         device = input_ids.device
         # Compute token and position embeddings
-        token_emb = self.token_emb(input_ids)  # (batch, seq, d_model)
         positions = torch.arange(seq, device=device).unsqueeze(0).expand(batch, -1)
-        pos_emb = self.pos_emb(positions)
-        h = token_emb + pos_emb
+        h = self.embed(input_ids, positions)
         aux_loss_total = h.new_zeros(1)
         # Pass through stacked FBS blocks
         for layer in self.layers:
@@ -543,6 +571,9 @@ class FBSModel(nn.Module):
                 pseudo_labels=pseudo_labels,
                 threshold=threshold,
             )
+            weights = getattr(self, "loss_weights", None)
+            if weights is not None:
+                aux_loss = sum(weights.get(name, 0.) * value for name, value in layer.last_losses.items()) / len(self.layers)
             aux_loss_total = aux_loss_total + aux_loss
         # Final layer norm
         h = self.norm(h)
@@ -550,7 +581,7 @@ class FBSModel(nn.Module):
         logits = self.lm_head(h)  # (batch, seq, vocab)
         # Compute language modelling loss
         lm_loss = h.new_zeros(1)
-        if targets is not None:
+        if targets is not None and (targets != -100).any():
             lm_loss = F.cross_entropy(
                 logits.view(-1, self.vocab_size),
                 targets.view(-1),
@@ -559,3 +590,13 @@ class FBSModel(nn.Module):
         # Total loss
         total_loss = lm_loss + aux_loss_total
         return logits, total_loss
+
+    def embed(self, input_ids, positions):
+        return self.token_emb(input_ids) + self.pos_emb(positions)
+
+    def parameter_report(self):
+        total = sum(p.numel() for p in self.parameters())
+        auxiliary = sum(p.numel() for layer in self.layers for module in (layer.paw, layer.ch, layer.sg) for p in module.parameters())
+        backbone = total - auxiliary
+        return {"total": total, "backbone": backbone, "auxiliary": auxiliary,
+                "overhead_fraction": auxiliary / backbone}

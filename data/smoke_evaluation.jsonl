@@ -1,0 +1,2 @@
+{"id":"synthetic-choice","prompt_ids":[2,3],"choice_ids":[[4],[8]],"gold_index":0,"shots":0,"split":"test"}
+{"id":"synthetic-likelihood","prompt_ids":[3,4],"answer_ids":[5,6,7],"shots":0,"split":"test"}
