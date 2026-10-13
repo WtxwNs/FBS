@@ -95,7 +95,7 @@ class ModelTests(unittest.TestCase):
         target = torch.tensor([[2, 3, -100]])
         _, loss = paw(h, torch.randn(7, 4), target)
         logits = paw.preview_heads[0](h)
-        expected = F.cross_entropy(logits.reshape(-1, 7), target.reshape(-1))
+        expected = .5 * F.cross_entropy(logits.reshape(-1, 7), target.reshape(-1))
         torch.testing.assert_close(loss.squeeze(), expected, rtol=1e-5, atol=1e-5)
 
     def test_padded_batch_has_finite_loss_and_gradients(self):

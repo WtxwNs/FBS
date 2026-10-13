@@ -1,0 +1,89 @@
+{
+  "purpose": "Synthetic-fixture CPU execution checks, not benchmark quality",
+  "executed_on": "2026-10-13",
+  "stage1": [
+    {
+      "step": 1,
+      "tokens": 32,
+      "loss": 11.2859046459198,
+      "learning_rate": 0.001
+    },
+    {
+      "step": 2,
+      "tokens": 64,
+      "loss": 11.16753888130188,
+      "learning_rate": 0.0008865052266813684
+    },
+    {
+      "step": 3,
+      "tokens": 96,
+      "loss": 10.279760599136353,
+      "learning_rate": 0.0005327015646150716
+    },
+    {
+      "step": 4,
+      "tokens": 128,
+      "loss": 10.740041732788086,
+      "learning_rate": 0.00015820384898856444
+    }
+  ],
+  "evaluation": {
+    "protocol": {
+      "checkpoint": "runs/calibration_final/model.pt",
+      "data": "data/smoke_evaluation.jsonl",
+      "output_dir": "runs/evaluation_final",
+      "device": "cpu",
+      "thresholds": [
+        1.0,
+        0.9,
+        0.8,
+        0.7
+      ],
+      "shots": 0
+    },
+    "parameters": {
+      "total": 18404,
+      "backbone": 6784,
+      "auxiliary": 11620,
+      "overhead_fraction": 1.7128537735849056
+    },
+    "results": [
+      {
+        "records": 2,
+        "classified": 1,
+        "accuracy": 0.0,
+        "scored_tokens": 3,
+        "mean_nll": 9.387933095296225,
+        "perplexity": 11943.3879582679,
+        "threshold": 1.0
+      },
+      {
+        "records": 2,
+        "classified": 1,
+        "accuracy": 0.0,
+        "scored_tokens": 3,
+        "mean_nll": 9.387933095296225,
+        "perplexity": 11943.3879582679,
+        "threshold": 0.9
+      },
+      {
+        "records": 2,
+        "classified": 1,
+        "accuracy": 0.0,
+        "scored_tokens": 3,
+        "mean_nll": 9.387933095296225,
+        "perplexity": 11943.3879582679,
+        "threshold": 0.8
+      },
+      {
+        "records": 2,
+        "classified": 1,
+        "accuracy": 0.0,
+        "scored_tokens": 3,
+        "mean_nll": 9.387933095296225,
+        "perplexity": 11943.3879582679,
+        "threshold": 0.7
+      }
+    ]
+  }
+}

@@ -1,81 +1,134 @@
 # FBS: Modeling Native Parallel Reading inside a Transformer
 
-<p align="center">
-  <a href="https://arxiv.org/abs/2601.21708">
-    <img src="https://img.shields.io/badge/arXiv-2601.21708-b31b1b.svg" alt="arXiv"/>
-  </a>
-  <a href="https://github.com/WtxwNs/FBS/blob/master/LICENSE">
-    <img src="https://img.shields.io/github/license/WtxwNs/FBS" alt="License"/>
-  </a>
-  <img src="https://img.shields.io/github/repo-size/WtxwNs/FBS" alt="Repo Size"/>
-  <img src="https://img.shields.io/github/stars/WtxwNs/FBS?style=social" alt="Stars"/>
-</p>
+Reference implementation for [the FBS paper](https://arxiv.org/abs/2601.21708)
+([ACL Findings](https://aclanthology.org/2026.findings-acl.200/)).
 
-This repository contains a minimal yet complete implementation of the **Fovea‑Block‑Skip (FBS) Transformer** as described in the paper *“FBS: Modeling Native Parallel Reading inside a Transformer”*, which has been accepted as findings to ACL 2026.  The goal of this package is to faithfully reproduce the novel architectural components—Parafovea‑Attention Window (PAW), Chunk‑Head (CH) and Skip‑Gate (SG)—within a conventional causal Transformer and provide a runnable training script on a toy corpus.
+FBS combines predictive preview (PAW), online chunk context (CH), and a learned
+skip gate (SG). The hard executor bypasses a skipped token-layer's Q/K/V,
+attention, CH and FFN, leaves its layer cache unchanged, and advances the global
+token position.
 
-The implementation focuses on clarity and modularity rather than chasing state‑of‑the‑art performance.  It is intended to serve as a reference implementation for researchers and engineers wishing to experiment with FBS‑style models.  All code is fully contained in this package and does not require any external proprietary dependencies.
+**Status:** this repository now includes training, Qwen3 weight transfer,
+cached hard skipping, PPO gate calibration, local evaluation and fixed-length
+timing. It is a tested reference reconstruction. **The paper's full numerical
+results have not been reproduced.** Original checkpoints, data manifests and
+some architecture details are missing or inconsistent. See
+[REPRODUCTION.md](REPRODUCTION.md) before running large experiments.
 
-## Contents
+## Installation and checks
 
-* `fbs/model.py` – Core PyTorch modules implementing the FBS block: a standard causal self‑attention + feed‑forward network augmented with PAW, CH and SG.
-* `fbs/train.py` – A simple training loop that trains the FBS model on a toy language modelling task using a small sample corpus.  The script tokenises text at the word level and optimises the model using next‑token prediction.
-* `fbs/utils.py` – Helper functions for building the vocabulary, batching sequences and computing losses.
-* `data/sample.txt` – A tiny English/Chinese mixed dataset used by default in `train.py`.  Replace this file with your own corpus to train on larger datasets.
-* `requirements.txt` – List of Python dependencies needed to run the code.
-
-## Installation
-
-1. Ensure you have Python 3.8 or later installed.  It is recommended to create a fresh virtual environment:
-
-   ```bash
-   python -m venv .venv
-   source .venv/bin/activate
-   ```
-
-2. Install the required packages:
-
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-## Running the toy training script
-
-The following command will train a small FBS model for a few epochs on the included sample corpus.  The default hyper‑parameters are intentionally small so that training finishes quickly on a CPU.
+Validated with Python 3.12 and PyTorch 2.5.1 on CPU. Install a PyTorch build
+compatible with your GPU separately if required; record that changed environment.
+The original timing protocol uses A100 hardware, Python 3.10 and PyTorch 2.3.1.
 
 ```bash
-python -m fbs.train \
-    --data_path data/sample.txt \
-    --epochs 5 \
-    --batch_size 4 \
-    --seq_len 32 \
-    --d_model 64 \
-    --n_layers 2 \
-    --n_heads 4 \
-    --k_max 8 \
-    --learning_rate 1e-3
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements-hf.txt
+OMP_NUM_THREADS=1 python -m unittest discover -s tests -v
 ```
 
-During training the script reports the cross‑entropy loss and perplexity.  Upon completion the model checkpoint is saved to disk (`./fbs_model.pt`).  Feel free to adjust hyper‑parameters, increase the model size, or swap in your own dataset to explore the effects of PAW/CH/SG.
+`requirements.txt` is enough for the small native model. `requirements-hf.txt`
+adds the tested Qwen3 adapter version. The tests instantiate a tiny random Qwen3
+locally, so no multi-gigabyte checkpoint download is required.
 
-Short corpora and final partial batches are padded: input padding is `0`
-and ignored target positions are `-100`. At least two tokens are required.
-The reported `loss` includes the PAW/CH auxiliary objectives; `ppl` uses
-only next-token cross-entropy on valid targets.
+## End-to-end CPU smoke workflow
 
-Run the small CPU regression suite after installing the dependencies:
+The supplied integer sequences are **synthetic plumbing fixtures**, not
+substitutes for benchmark examples or training data.
 
 ```bash
-python -m unittest discover -s tests -v
+python -m fbs.run --config configs/smoke.json
+python -m fbs.calibrate \
+  --checkpoint runs/smoke/latest.pt \
+  --prompts data/smoke_calibration.jsonl \
+  --held-out-prompts data/smoke_heldout.jsonl \
+  --output runs/calibration/model.pt \
+  --new-tokens 4 --epochs 1 --ppo-epochs 2
+python -m fbs.evaluate \
+  --checkpoint runs/calibration/model.pt \
+  --data data/smoke_evaluation.jsonl --shots 0 \
+  --output-dir runs/evaluation
+python -m fbs.benchmark \
+  --checkpoint runs/calibration/model.pt \
+  --prompts data/smoke_heldout.jsonl --prompt-length 3 \
+  --new-tokens 4 --warmup 1 --repetitions 2 \
+  --output runs/timing.json
 ```
 
-## Notes on the implementation
+The smoke training run writes four optimizer steps, 128 target tokens, arguments,
+loss records, parameter counts and a reloadable checkpoint. Existing training
+outputs are protected; use a new output directory or explicitly `--resume` from
+a checkpoint with the same configuration.
 
-This codebase follows the algorithmic description in the paper as closely as possible while keeping the implementation concise and understandable:
+The original word-level example remains available:
 
-1. **Parafovea‑Attention Window (PAW)** – Given the hidden state at each position, PAW predicts a variable lookahead window length `k(i)` (bounded by `k_max`) using a small linear head.  For each horizon `r∈{1,…,k_max}` the module produces a distribution over the `r`‑th next token, maps the distribution into a preview embedding by taking its expectation under the embedding matrix, and then compresses these embeddings into a single preview vector `z(i)` via weighted mean pooling.  The window weights follow the soft assignment in Appendix C.2 of the paper.  The preview vector is added to the token state before the feed‑forward network.
+```bash
+python -m fbs.train --data_path data/sample.txt --epochs 1 \
+  --d_model 64 --n_layers 2 --n_heads 4 --d_ff 128 --k_max 4 \
+  --seed 42 --output_dir runs/word_toy
+```
 
-2. **Chunk‑Head (CH)** – A lightweight classifier predicts BIOS‑style chunk labels (`B`, `I`, `O`, `S`) for each token.  Based on the predicted labels, tokens are pooled into chunk representations. Each token attends only to chunks that ended strictly before its position, so future states and boundaries cannot leak into causal predictions. Positions with no completed chunks receive a zero CH contribution. The weak‑supervision pipeline described in Appendix D is beyond the scope of this toy implementation; instead we train the chunk classifier jointly with the language model using pseudo‑labels inferred from token boundaries.
+## Use pretrained Qwen3 weights
 
-3. **Skip‑Gate (SG)** – A small multi‑layer perceptron computes a skip probability from the current hidden state and PAW preview.  At inference time the gate can short‑circuit the expensive attention and feed‑forward computations, forwarding the previous hidden state instead.  In this demonstration the gate is trained using a straight‑through estimator, as described in Appendix E.2.
+`fbs.hf.QwenFBSModel` copies the actual checkpoint's attention, MLP, normalization,
+embedding and language-head weights. It preserves grouped-query attention,
+Q/K normalization and rotary positions. Disabling PAW/CH/SG is tested to recover
+the original Qwen3 logits in both cached and dense execution.
 
-The supplied code is deliberately self‑contained and does not depend on any external large language model checkpoints.  To reproduce the full experiments reported in the FBS paper one would need to perform large‑scale continual pre‑training on billions of tokens and tune numerous hyper‑parameters; such a pipeline is far beyond the scope of a compact example.  Nevertheless, this repository provides a concrete and extensible starting point for researchers who wish to explore FBS on smaller problems or integrate its components into existing architectures.
+Prepare local JSONL documents using an explicitly selected tokenizer revision:
+
+```bash
+python -m fbs.data --input corpus.jsonl --output data/prepared_corpus.jsonl \
+  --tokenizer YOUR_ORIGINAL_CHECKPOINT --revision YOUR_REVISION
+```
+
+Input documents have `text` and `source_id`. For Chinese BIOS supervision add
+`--chinese-bios --idiom-lexicon path/to/original_lexicon.txt` and install `pkuseg`.
+The exact original segmentation model/lexicon must be supplied separately.
+
+Copy `configs/qwen3_reconstruction.example.json`, replace the checkpoint,
+revision and data paths, and review the explicitly chosen module/loss settings:
+
+```bash
+python -m fbs.run --config configs/my_run.json --device cuda
+```
+
+The 12B-token budget, approximately 2M-token accumulated batch, 2e-5 learning rate
+and 4% warmup come from the paper. Low-rank module dimensions, auxiliary-loss
+coefficients and sequence length in the example are **reconstruction defaults**,
+not recovered original values. The code does not shrink the backbone to assert
+parameter matching; `parameters.json` gives actual unique parameter counts.
+Full pretraining needs substantial memory and compute. A small run or adapter-only
+training is not a replication of the 12B-token experiment.
+
+## Evaluation and timing
+
+`fbs.evaluate` scores prepared held-out multiple-choice records or continuation
+likelihoods and writes per-example predictions. Explicit `shots` fields prevent
+mislabeling zero-shot fixtures as five-shot results. It can sweep SG thresholds
+on the same checkpoint and data. It does not replace official code-execution or
+free-response benchmark graders.
+
+`fbs.benchmark` defaults to 512 prompt tokens, 128 generated tokens, 20 warmups,
+50 repetitions, greedy decoding and CUDA synchronization. Tokenization/I/O
+are outside the timer. It records prefill/decode/total time and actual token-layer
+execution counts. The first generated token comes from the final prefill logits,
+so 128 generated tokens require 127 subsequent one-token forward calls.
+The execution fraction excludes auxiliary-module cost and **is not TFLOPs**.
+This Python executor is a correctness reference, not an optimized GPU kernel.
+
+## Source map
+
+- `fbs/model.py`: PAW, causal online CH, stochastic straight-through SG, dense training.
+- `fbs/inference.py`: sparse per-layer KV cache and hard execution.
+- `fbs/hf.py`: Qwen3 weight-preserving adapter.
+- `fbs/data.py`: character-offset BIOS labels and prompt-overlap checks.
+- `fbs/run.py`, `fbs/checkpoint.py`: token-budget training and reproducible checkpoints.
+- `fbs/calibrate.py`: SG/PAW PPO with a frozen full-compute reference.
+- `fbs/evaluate.py`, `fbs/benchmark.py`: prediction artifacts and measured timing.
+- [VALIDATION.md](VALIDATION.md): checks actually executed for this revision.
+
+The old root `fbs_model_epoch1.pt` is a legacy toy checkpoint without a saved
+architecture configuration. It is not a paper checkpoint; the new loader rejects
+it rather than guessing its architecture.

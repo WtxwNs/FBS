@@ -1,0 +1,14 @@
+{
+  "seed": 42,
+  "model": {"vocab_size": 16, "d_model": 16, "n_layers": 2, "n_heads": 2, "d_ff": 32, "k_max": 2, "max_seq_len": 128, "preview_rank": 4},
+  "data": "../data/smoke_tokens.jsonl",
+  "output": "../runs/smoke",
+  "seq_len": 8,
+  "token_budget": 128,
+  "batch_tokens": 32,
+  "max_steps": 4,
+  "learning_rate": 0.001,
+  "warmup_fraction": 0.04,
+  "loss_weights": {"preview": 0.1, "bios": 0.1, "align": 0.01, "gate": 0.01},
+  "save_every": 2
+}
