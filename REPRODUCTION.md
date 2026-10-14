@@ -3,6 +3,11 @@
 Source: the 32-page ACL Findings version of *FBS: Modeling Native Parallel
 Reading inside a Transformer*, Sections 2–3 and Appendices B–E.
 
+See [ARCHITECTURE_AUDIT.md](ARCHITECTURE_AUDIT.md) for the version-by-version
+evidence, exact backbone/PAW/CH/SG counts, public model decision, compute and
+training feasibility analysis, and a defensible correction statement. Confirmed
+description errors do not establish which architecture was used historically.
+
 | Paper component | Current implementation | Scope |
 |---|---|---|
 | Prefix-predictive multi-horizon PAW, C.1 | Expected embedding over predicted top-K support; future tokens used only as loss labels | Native and Qwen3 models |
@@ -19,16 +24,25 @@ Reading inside a Transformer*, Sections 2–3 and Appendices B–E.
 
 ## Architecture and data ambiguities
 
-1. Section 3.1.1 names Qwen3-4B-Instruct while giving width 4096, 32 layers,
+1. Section 3.1.1 says *comparable to* Qwen3-4B-Instruct while giving width 4096, 32 layers,
    32 heads and ~32K vocabulary. Public Qwen3-4B configurations have width 2560,
    36 layers and vocabulary 151936 ([official configuration](https://huggingface.co/Qwen/Qwen3-4B/blob/main/config.json)).
-   These are not interchangeable backbones. The original checkpoint identifier,
+   Its additional direct weight-copy and baseline statements do not reconcile
+   these shapes. Public Qwen3-4B uses 32 query heads, 8 KV heads and head_dim=128:
+   the concatenated query width is 4096, not the hidden width. Both arXiv versions
+   and the final publication retain the conflict. The original checkpoint identifier,
    immutable revision, tokenizer and trained weights are needed.
-2. Independent full-vocabulary heads at every horizon/layer do not fit the
-   paper's claimed few-million-parameter overhead. The native model retains that
+2. **If** full-vocabulary heads are independent at every horizon/layer, they do
+   not fit the paper's few-million-parameter overhead. The paper does not uniquely
+   specify their sharing/factorization; the tied expectation embedding does not
+   by itself tie prediction heads. The native model retains the independent
    option for legacy compatibility. The Qwen adapter implements tied low-rank
    preview heads and bottleneck CH projections, explicitly a reconstruction.
    Rank 32 is a configurable choice, not a recovered paper hyperparameter.
+   PAW's mean-plus-bottleneck-MLP compressor also differs from C.5's default
+   grouped convolution (kernel 3) plus pooling. Top-K is applied after dense
+   vocabulary logits, so it does not eliminate their compute cost. The public
+   example now uses the paper's k_max=15 and a fixed public Qwen3-4B revision.
 3. Original 30B-token corpus sampling proportions, deduplication similarity
    definition, exact 12B-token training order, pkuseg model and idiom lexicon
    are not available. `fbs.data` performs exact normalized deduplication only;
