@@ -100,7 +100,8 @@ class ReproductionTests(unittest.TestCase):
         from fbs.hf import QwenFBSModel
         config = Qwen3Config(vocab_size=32, hidden_size=16, intermediate_size=32,
                              num_hidden_layers=2, num_attention_heads=4, num_key_value_heads=2,
-                             head_dim=4, max_position_embeddings=64, attention_dropout=0.)
+                             # Qwen3-4B has hidden_size != num_heads * head_dim.
+                             head_dim=8, max_position_embeddings=64, attention_dropout=0.)
         backbone = Qwen3ForCausalLM(config).eval()
         ids = torch.tensor([[1,2,3,4]])
         with torch.no_grad():

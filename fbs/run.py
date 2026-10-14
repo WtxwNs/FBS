@@ -51,7 +51,12 @@ def train(config, config_path, device, resume=None):
     elif "pretrained" in config:
         from .hf import QwenFBSModel
         spec = config["pretrained"]
+        dtype_name = spec.get("dtype", "float32")
+        if dtype_name not in ("float32", "bfloat16", "float16"):
+            raise ValueError("pretrained.dtype must be float32, bfloat16 or float16")
         model = QwenFBSModel.from_pretrained(spec["model_id"], spec["revision"], device=device,
+                                            dtype=getattr(torch, dtype_name),
+                                            expected_config=spec.get("expected_config"),
                                             **config.get("fbs", {}))
         checkpoint = {}
     else:
