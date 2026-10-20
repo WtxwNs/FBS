@@ -1,0 +1,118 @@
+{
+  "scope": "Public reconstruction; no historical weights or numerical results verified",
+  "backbone": {
+    "per_layer": {
+      "q_proj": 10485760,
+      "k_proj": 2621440,
+      "v_proj": 2621440,
+      "o_proj": 10485760,
+      "gate_proj": 24903680,
+      "up_proj": 24903680,
+      "down_proj": 24903680,
+      "input_layernorm": 2560,
+      "post_attention_layernorm": 2560,
+      "q_norm": 128,
+      "k_norm": 128
+    },
+    "per_layer_total": 100930816,
+    "all_layers": 3633509376,
+    "embedding": 388956160,
+    "additional_lm_head": 0,
+    "final_norm": 2560,
+    "total": 4022468096
+  },
+  "reconstruction_auxiliary": {
+    "per_layer": {
+      "paw": {
+        "window": 2561,
+        "down": 81920,
+        "up": 81920,
+        "horizon_offsets": 480,
+        "compress_down": 81952,
+        "compress_up": 84480
+      },
+      "ch": {
+        "bios": 10244,
+        "q_proj": 81952,
+        "k_proj": 81952,
+        "v_proj": 81952,
+        "out_proj": 84480
+      },
+      "sg": {
+        "fc1": 163872,
+        "fc2": 33
+      }
+    },
+    "all_layers": {
+      "paw": 11999268,
+      "ch": 12260880,
+      "sg": 5900580
+    },
+    "total": 30160728
+  },
+  "total": 4052628824,
+  "overhead_fraction": 0.007498065187886079,
+  "hypothetical_dense_heads_weights_only": {
+    "one_d_by_vocab_head": 388956160,
+    "shared_across_layers_horizon_specific": 5834342400,
+    "independent_per_layer_and_horizon": 210036326400,
+    "paper_shape_V32000_k15": 62914560000,
+    "paper_shape_V32768_k15": 64424509440
+  },
+  "dense_ch_with_biases_all_layers": 944455824,
+  "cost": {
+    "convention": "2 FLOPs per multiply-add; analytical, not measured",
+    "decode_context_keys": 512,
+    "decode_active_horizons": 8,
+    "backbone_linear_per_layer": 201850880,
+    "backbone_attention_per_layer": 8388608,
+    "lm_head_per_token": 777912320,
+    "baseline_decode_per_token": 8346533888,
+    "paw_per_horizon_per_layer": 778240000,
+    "paw_all_layers_per_token": 224145100800,
+    "sg_all_layers_per_token": 11798784,
+    "ch_projection_per_executed_layer_one_new_chunk": 675840,
+    "ch_attention_per_cached_chunk": 128,
+    "paw_to_baseline_decode_ratio": 26.85487219098918,
+    "minimum_with_all_backbone_layers_skipped": 224934811904,
+    "training_tokens": 12000000000,
+    "baseline_training_linear_flops_approx": 289603584000000000000,
+    "paw_training_linear_flops_approx": 15129416908800000000000,
+    "baseline_plus_paw_training_linear_flops_approx": 15419020492800000000000,
+    "exclusions": [
+      "softmax/top-k/CE, norms, activations, memory traffic, Python overhead",
+      "training attention and CH; SG training matmuls",
+      "optimizer updates, rematerialization and communication"
+    ],
+    "training_note": "Dense ST computes attention/FFN branches; skip fraction is not a training FLOPs discount."
+  },
+  "source": {
+    "model_id": "Qwen/Qwen3-4B",
+    "revision": "1cfa9a7208912126459214e8b04321603b3df60c",
+    "dtype": "bfloat16",
+    "expected_config": {
+      "model_type": "qwen3",
+      "hidden_size": 2560,
+      "num_hidden_layers": 36,
+      "num_attention_heads": 32,
+      "num_key_value_heads": 8,
+      "head_dim": 128,
+      "intermediate_size": 9728,
+      "vocab_size": 151936,
+      "tie_word_embeddings": true,
+      "attention_bias": false,
+      "rope_theta": 1000000,
+      "max_position_embeddings": 40960
+    }
+  },
+  "verification": {
+    "method": "Full-shape meta tensors; no weights downloaded or forward pass",
+    "by_component": {
+      "backbone": 4022468096,
+      "paw": 11999268,
+      "ch": 12260880,
+      "sg": 5900580
+    },
+    "passed": true
+  }
+}

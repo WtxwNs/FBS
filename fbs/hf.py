@@ -5,6 +5,7 @@ actual checkpoint configuration; it does not fabricate a 4096x32 'Qwen3-4B'.
 A tied low-rank PAW is an explicit reconstruction choice, not a recovered
 historical architecture. Report the measured parameter overhead.
 """
+import re
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -48,12 +49,15 @@ class QwenAttention(nn.Module):
 
 
 class QwenFBSModel(FBSModel):
-    def __init__(self, backbone, k_max=8, preview_rank=32, chunk_rank=32, gate_hidden=32,
+    def __init__(self, backbone, k_max=15, preview_rank=32, chunk_rank=32, gate_hidden=32,
                  use_paw=True, use_ch=True, use_sg=True, source=None):
         nn.Module.__init__(self)
         cfg = backbone.config
         if cfg.model_type != "qwen3" or getattr(cfg, "use_sliding_window", False):
             raise ValueError("Only dense Qwen3 global-attention checkpoints are supported")
+        if any(not isinstance(r, int) or isinstance(r, bool) or r < 1
+               for r in (preview_rank, chunk_rank, gate_hidden)):
+            raise ValueError("Qwen reconstruction requires positive integer auxiliary ranks/widths")
         self.vocab_size, self.d_model = cfg.vocab_size, cfg.hidden_size
         self.max_seq_len = cfg.max_position_embeddings
         self.token_emb, self.norm, self.lm_head = backbone.model.embed_tokens, backbone.model.norm, backbone.lm_head
@@ -80,12 +84,23 @@ class QwenFBSModel(FBSModel):
         return self.token_emb(input_ids)
 
     @classmethod
-    def from_pretrained(cls, model_id, revision, **kwargs):
-        from transformers import AutoModelForCausalLM
-        if not revision:
-            raise ValueError("Specify a checkpoint revision for reproducibility")
+    def from_pretrained(cls, model_id, revision, expected_config=None, **kwargs):
+        from transformers import AutoConfig, AutoModelForCausalLM
+        if not re.fullmatch(r"[0-9a-f]{40}", revision or ""):
+            raise ValueError("Specify an immutable 40-character checkpoint commit revision")
+        cfg = AutoConfig.from_pretrained(model_id, revision=revision, trust_remote_code=False)
+        validate_backbone_config(cfg, expected_config)
         device = kwargs.pop("device", "cpu")
         dtype = kwargs.pop("dtype", torch.float32)
         backbone = AutoModelForCausalLM.from_pretrained(model_id, revision=revision, torch_dtype=dtype,
                                                        trust_remote_code=False, attn_implementation="eager")
         return cls(backbone, source={"model_id": model_id, "revision": revision}, **kwargs).to(device)
+
+
+def validate_backbone_config(config, expected=None):
+    """Check the declared public architecture before downloading large weights."""
+    actual = config.to_dict()
+    mismatches = {key: {"expected": value, "actual": actual.get(key)}
+                  for key, value in (expected or {}).items() if actual.get(key) != value}
+    if mismatches:
+        raise ValueError(f"Checkpoint architecture differs from the recorded configuration: {mismatches}")

@@ -1,5 +1,37 @@
 # Executed validation
 
+## Architecture audit update — 2026-10-14
+
+On Python 3.12, PyTorch 2.5.1+cpu and Transformers 4.51.3:
+
+- **20 tests passed**, with no skipped tests. The original 16 checks remain.
+- Full public 4B shapes were constructed on the **meta device**. Exact unique
+  tensor counts agree with the independent public BF16 weight-index size and
+  the analytic counts for PAW/CH/SG. No pretrained weights or full-size forward
+  execution were involved. Results: [public_architecture_audit.json](validation/public_architecture_audit.json).
+- Qwen output-parity checking now uses `hidden_size != heads * head_dim` and GQA,
+  matching the public model's non-square Q/O projection geometry.
+- Incorrect expected backbone fields and a mutable revision are rejected;
+  tied and frozen parameters are counted correctly.
+- A small CPU operator-profile check matches the PAW matrix FLOP formula even
+  with top_k=1. This verifies accounting, not performance or a trained model.
+- The synthetic stage-1 runner was re-executed for 4 steps / 128 tokens to
+  verify the expanded parameter report is written correctly. This remains a
+  native toy workflow; no full-size training was attempted.
+
+```bash
+OMP_NUM_THREADS=1 python -m unittest discover -s tests -v
+OMP_NUM_THREADS=1 python -m fbs.audit --verify-meta \
+  --output validation/public_architecture_audit.json
+```
+
+The numerical claims about parameter overhead now apply to the explicitly
+specified **public reconstruction only**. Published experimental equivalence,
+full training feasibility, scores and A100 timing remain unverified. The earlier
+end-to-end synthetic runs below are retained as historical validation records.
+
+## Previous pipeline validation — 2026-10-13
+
 Checked on 2026-10-13 with Python 3.12, PyTorch 2.5.1+cpu,
 Transformers 4.51.3 and Accelerate 1.6.0. No CUDA device was used and no
 full-size Qwen checkpoint was downloaded.

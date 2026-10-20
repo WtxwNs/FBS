@@ -11,6 +11,7 @@ jobs:
       - run: pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
       - run: pip install -r requirements-hf.txt
       - run: OMP_NUM_THREADS=1 python -m unittest discover -s tests -v
+      - run: OMP_NUM_THREADS=1 python -m fbs.audit --verify-meta
       - run: OMP_NUM_THREADS=1 python -m fbs.run --config configs/smoke.json
       - run: OMP_NUM_THREADS=1 python -m fbs.calibrate --checkpoint runs/smoke/latest.pt --prompts data/smoke_calibration.jsonl --held-out-prompts data/smoke_heldout.jsonl --output runs/calibration/model.pt --new-tokens 4 --epochs 1 --ppo-epochs 1
       - run: OMP_NUM_THREADS=1 python -m fbs.evaluate --checkpoint runs/calibration/model.pt --data data/smoke_evaluation.jsonl --shots 0 --output-dir runs/evaluation

@@ -14,6 +14,11 @@ timing. It is a tested reference reconstruction. **The paper's full numerical
 results have not been reproduced.** Original checkpoints, data manifests and
 some architecture details are missing or inconsistent. See
 [REPRODUCTION.md](REPRODUCTION.md) before running large experiments.
+The [architecture and cost audit](ARCHITECTURE_AUDIT.md) separates confirmed
+publication conflicts from unrecovered experiment details. The public low-rank
+reconstruction adds 30,160,728 parameters (0.750%), but still performs expensive
+full-vocabulary PAW projections. Its small parameter budget is not evidence of
+the paper's compute savings.
 
 ## Installation and checks
 
@@ -80,15 +85,25 @@ Prepare local JSONL documents using an explicitly selected tokenizer revision:
 
 ```bash
 python -m fbs.data --input corpus.jsonl --output data/prepared_corpus.jsonl \
-  --tokenizer YOUR_ORIGINAL_CHECKPOINT --revision YOUR_REVISION
+  --tokenizer Qwen/Qwen3-4B --revision 1cfa9a7208912126459214e8b04321603b3df60c
 ```
 
 Input documents have `text` and `source_id`. For Chinese BIOS supervision add
 `--chinese-bios --idiom-lexicon path/to/original_lexicon.txt` and install `pkuseg`.
 The exact original segmentation model/lexicon must be supplied separately.
 
-Copy `configs/qwen3_reconstruction.example.json`, replace the checkpoint,
-revision and data paths, and review the explicitly chosen module/loss settings:
+`configs/qwen3_reconstruction.example.json` now specifies this public checkpoint,
+its immutable revision, BF16 loading and expected tensor geometry. This is a
+new public reconstruction baseline, not a recovered original checkpoint.
+Run the weight-free audit first:
+
+```bash
+python -m fbs.audit --verify-meta --output validation/public_architecture_audit.json
+```
+
+Copy the example, replace data/output paths, and review module/loss settings and
+the [training feasibility limits](ARCHITECTURE_AUDIT.md#training-scale-and-feasibility)
+before launching a deliberately budgeted experiment:
 
 ```bash
 python -m fbs.run --config configs/my_run.json --device cuda
@@ -97,10 +112,16 @@ python -m fbs.run --config configs/my_run.json --device cuda
 The 12B-token budget, approximately 2M-token accumulated batch, 2e-5 learning rate
 and 4% warmup come from the paper. Low-rank module dimensions, auxiliary-loss
 coefficients and sequence length in the example are **reconstruction defaults**,
-not recovered original values. The code does not shrink the backbone to assert
+not recovered original values. `k_max=15` is the paper default; the former
+example's value 8 was not that default. The mean-plus-MLP preview compressor is
+also a reconstruction; the paper's default is grouped convolution plus pooling.
+The code does not shrink the backbone to assert
 parameter matching; `parameters.json` gives actual unique parameter counts.
 Full pretraining needs substantial memory and compute. A small run or adapter-only
-training is not a replication of the 12B-token experiment.
+training is not a replication of the 12B-token experiment. The current dense
+PAW training graph is not a validated single-A100 recipe; BF16 loading alone
+does not resolve its activation memory or compute cost. Plain AdamW here does
+not supply FP32 master weights or mixed-precision loss scaling.
 
 ## Evaluation and timing
 
@@ -123,6 +144,7 @@ This Python executor is a correctness reference, not an optimized GPU kernel.
 - `fbs/model.py`: PAW, causal online CH, stochastic straight-through SG, dense training.
 - `fbs/inference.py`: sparse per-layer KV cache and hard execution.
 - `fbs/hf.py`: Qwen3 weight-preserving adapter.
+- `fbs/audit.py`: full-shape parameter verification and scoped analytic FLOPs.
 - `fbs/data.py`: character-offset BIOS labels and prompt-overlap checks.
 - `fbs/run.py`, `fbs/checkpoint.py`: token-budget training and reproducible checkpoints.
 - `fbs/calibrate.py`: SG/PAW PPO with a frozen full-compute reference.

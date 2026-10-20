@@ -1,10 +1,11 @@
 """
 Implementation of the Fovea‑Block‑Skip (FBS) Transformer.
 
-This module implements the core components of the FBS architecture as
-described in the paper *“FBS: Modeling Native Parallel Reading inside a
-Transformer”*.  Each FBS block augments a standard causal Transformer
-layer with three lightweight modules:
+This module reconstructs core concepts from *“FBS: Modeling Native Parallel
+Reading inside a Transformer”*. It is not recovered historical experiment
+code; module widths, sharing and compression choices are audited in
+ARCHITECTURE_AUDIT.md. Each FBS block augments a causal Transformer layer
+with three modules (small parameter count does not imply small compute):
 
 * **Parafovea‑Attention Window (PAW)** – predicts a variable lookahead
   window for each token, produces multi‑step next‑token distributions
@@ -595,8 +596,6 @@ class FBSModel(nn.Module):
         return self.token_emb(input_ids) + self.pos_emb(positions)
 
     def parameter_report(self):
-        total = sum(p.numel() for p in self.parameters())
-        auxiliary = sum(p.numel() for layer in self.layers for module in (layer.paw, layer.ch, layer.sg) for p in module.parameters())
-        backbone = total - auxiliary
-        return {"total": total, "backbone": backbone, "auxiliary": auxiliary,
-                "overhead_fraction": auxiliary / backbone}
+        # Deduplicate by Parameter identity, including tied embedding/LM weights.
+        from .audit import parameter_inventory
+        return parameter_inventory(self)

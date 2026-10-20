@@ -1,14 +1,57 @@
 {
   "seed": 42,
-  "pretrained": {"model_id": "SET_EXACT_ORIGINAL_QWEN3_CHECKPOINT", "revision": "SET_IMMUTABLE_CHECKPOINT_REVISION"},
-  "fbs": {"k_max": 8, "preview_rank": 32, "chunk_rank": 32, "gate_hidden": 32},
+  "pretrained": {
+    "model_id": "Qwen/Qwen3-4B",
+    "revision": "1cfa9a7208912126459214e8b04321603b3df60c",
+    "dtype": "bfloat16",
+    "expected_config": {
+      "model_type": "qwen3",
+      "hidden_size": 2560,
+      "num_hidden_layers": 36,
+      "num_attention_heads": 32,
+      "num_key_value_heads": 8,
+      "head_dim": 128,
+      "intermediate_size": 9728,
+      "vocab_size": 151936,
+      "tie_word_embeddings": true,
+      "attention_bias": false,
+      "rope_theta": 1000000,
+      "max_position_embeddings": 40960
+    }
+  },
+  "fbs": {
+    "k_max": 15,
+    "preview_rank": 32,
+    "chunk_rank": 32,
+    "gate_hidden": 32
+  },
   "data": "../data/prepared_corpus.jsonl",
   "output": "../runs/qwen3_reconstruction",
   "seq_len": 2048,
   "token_budget": 12000000000,
   "batch_tokens": 2000000,
-  "learning_rate": 0.00002,
+  "learning_rate": 2e-05,
   "warmup_fraction": 0.04,
-  "loss_weights": {"preview": 0.1, "bios": 0.1, "align": 0.01, "gate": 0.01},
-  "save_every": 100
+  "loss_weights": {
+    "preview": 0.1,
+    "bios": 0.1,
+    "align": 0.01,
+    "gate": 0.01
+  },
+  "save_every": 100,
+  "reconstruction": {
+    "status": "public reconstruction; historical experiment equivalence unverified",
+    "paw": "per-layer tied-embedding low-rank head with horizon offsets; weighted mean plus bottleneck MLP",
+    "ch": "per-layer bottleneck cross-attention",
+    "unrecovered_choices": [
+      "ranks",
+      "top_k=5",
+      "gamma=4",
+      "gate_hidden",
+      "loss_weights",
+      "seq_len",
+      "training dtype and optimizer state precision"
+    ],
+    "prompt_policy": "plain continuation for pretraining; if chat-formatted, record template and use enable_thinking=False as a reconstruction choice"
+  }
 }
